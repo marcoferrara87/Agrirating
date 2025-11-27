@@ -5,36 +5,18 @@ import pydeck as pdk
 import matplotlib.pyplot as plt
 
 # ------------------------------------------------
-# PARAMETRI BASE / COLORI / CLASSI
+# PARAMETRI BASE / CLASSI / COLORI
 # ------------------------------------------------
 
 CROPS = ["Grano duro", "Mais", "Vite", "Olivo", "Ortofrutta", "Bovini latte"]
 
 REGION_POINTS = {
-    "Lazio": [
-        (42.40, 12.85),
-        (41.90, 12.60),
-    ],
-    "Campania": [
-        (41.13, 14.78),
-        (40.93, 14.80),
-    ],
-    "Puglia": [
-        (41.47, 15.55),
-        (40.83, 16.55),
-    ],
-    "Emilia-Romagna": [
-        (44.70, 11.00),
-        (44.90, 11.40),
-    ],
-    "Lombardia": [
-        (45.60, 9.80),
-        (45.50, 9.30),
-    ],
-    "Toscana": [
-        (43.77, 11.25),
-        (43.32, 11.33),
-    ],
+    "Lazio": [(42.40, 12.85), (41.90, 12.60)],
+    "Campania": [(41.13, 14.78), (40.93, 14.80)],
+    "Puglia": [(41.47, 15.55), (40.83, 16.55)],
+    "Emilia-Romagna": [(44.70, 11.00), (44.90, 11.40)],
+    "Lombardia": [(45.60, 9.80), (45.50, 9.30)],
+    "Toscana": [(43.77, 11.25), (43.32, 11.33)],
 }
 
 COLOR_MAP = {
@@ -45,7 +27,7 @@ COLOR_MAP = {
     "E – Altamente rischiosa": [200, 0, 0],
 }
 
-# rating class → (PD_min, PD_max) in %
+# classe → intervallo di PD stimata (% annua)
 PD_MAP = {
     "A – Alta solvibilità": (0.0, 0.5),
     "B – Solvibile": (0.5, 1.5),
@@ -55,7 +37,7 @@ PD_MAP = {
 }
 
 # ------------------------------------------------
-# GENERAZIONE DATI FITTIZI
+# 1. GENERAZIONE DATI FITTIZI (INCLUSA BASE PER SERIE STORICA)
 # ------------------------------------------------
 
 def generate_dummy_data(n_farms: int = 200) -> pd.DataFrame:
@@ -97,34 +79,38 @@ def generate_dummy_data(n_farms: int = 200) -> pd.DataFrame:
         "superficie_ha": superfici,
         "coltura_principale": colture,
         "rese_t_ha": rese,
-        "eco_schemi_score": eco,
-        "compliance_score": comp,
+        "eco_schemi_score": eco,          # n. eco-schemi attivati (0–5)
+        "compliance_score": comp,         # indicatori di conformità (0–10)
         "anni_inadempienze_ultimi5": inademp,
     })
 
     df["prezzo_t"] = df["coltura_principale"].map(price_map)
     df["costo_ha"] = df["coltura_principale"].map(cost_ha_map)
 
+    # RICAVI DA MERCATO = superficie × rese × prezzo medio
     df["ricavi_mercato_eur"] = (
         df["superficie_ha"] * df["rese_t_ha"] * df["prezzo_t"]
     ).round(0)
 
+    # PAGAMENTI PAC/ECO-SCHEMI (titolo base + bonus eco-schemi)
     pac_ha_base = 250
     pac_ha_eco_bonus = 60
     df["pagamenti_pubblici_eur"] = (
         df["superficie_ha"] * (pac_ha_base + df["eco_schemi_score"] * pac_ha_eco_bonus)
     ).round(0)
 
+    # COSTI OPERATIVI = superficie × costo/ha × fattore casuale
     df["costi_operativi_eur"] = (
         df["superficie_ha"] * df["costo_ha"] *
         np.random.uniform(0.9, 1.2, len(df))
     ).round(0)
 
+    # DEBITO FINANZIARIO STIMATO
     df["debito_finanziario_eur"] = (
         df["ricavi_mercato_eur"] * np.random.uniform(0.2, 1.8, len(df))
     ).round(0)
 
-    # variabili strutturali / capitale
+    # STRUTTURA / CAPITALE
     df["valore_terreni_eur"] = (
         df["superficie_ha"] * np.random.uniform(15000, 40000, len(df))
     ).round(0)
@@ -133,57 +119,80 @@ def generate_dummy_data(n_farms: int = 200) -> pd.DataFrame:
     ).round(0)
     df["indice_diversificazione"] = np.random.uniform(0.0, 1.0, len(df))
 
-    # variabili andamentali / creditizie
+    # ANDAMENTALE / CREDITIZIO
     df["anni_rapporto_banca"] = np.random.randint(1, 21, len(df))
     df["numero_sconfinamenti_12m"] = np.random.randint(0, 6, len(df))
     df["giorni_medi_ritardo_pagamenti"] = np.random.randint(0, 61, len(df))
     df["cr_flag_sofferenza"] = np.random.binomial(1, 0.1, len(df))
 
-    # coordinate interne, jitter ma ancorate a punti plausibili
-    lats = []
-    lons = []
+    # COORDINATE
+    lats, lons = [], []
     for reg in df["regione"]:
-        pts = REGION_POINTS[reg]
-        base_lat, base_lon = pts[np.random.randint(len(pts))]
-        lat_j = np.random.normal(0, 0.08)
-        lon_j = np.random.normal(0, 0.08)
-        lats.append(base_lat + lat_j)
-        lons.append(base_lon + lon_j)
+        base_lat, base_lon = REGION_POINTS[reg][np.random.randint(2)]
+        lats.append(base_lat + np.random.normal(0, 0.08))
+        lons.append(base_lon + np.random.normal(0, 0.08))
     df["lat"] = lats
     df["lon"] = lons
+
+    # BASE PER SERIE STORICA: fattori di variazione casuali
+    df["trend_ricavi"] = np.random.uniform(0.95, 1.05, len(df))
+    df["trend_ebitda_margin"] = np.random.uniform(0.97, 1.03, len(df))
+    df["trend_eco"] = np.random.randint(-1, 2, len(df))
 
     return df
 
 # ------------------------------------------------
-# MOTORE ECONOMICO-FINANZIARIO DI BASE
+# 2. MOTORE FINANZIARIO DI BASE (FORMULE)
 # ------------------------------------------------
 
 def compute_financial_drivers(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
+    # RICAVI TOTALI = Ricavi di mercato + Pagamenti pubblici (PAC, eco-schemi, aiuti)
     df["ricavi_totali_eur"] = df["ricavi_mercato_eur"] + df["pagamenti_pubblici_eur"]
+
+    # EBITDA = Ricavi totali – Costi operativi
     df["ebitda_eur"] = df["ricavi_totali_eur"] - df["costi_operativi_eur"]
 
+    # EBITDA "aggiustato" per evitare divisioni per zero o valori estremi
     ebitda_floor = 1_000
     df["ebitda_adj_eur"] = df["ebitda_eur"].clip(lower=ebitda_floor)
 
+    # EBITDA MARGIN = EBITDA / Ricavi totali
     df["ebitda_margin"] = (df["ebitda_eur"] / df["ricavi_totali_eur"]).clip(-0.5, 0.6)
+
+    # RAPPORTO SUSSIDI = Pagamenti pubblici / Ricavi totali
     df["rapporto_sussidi"] = (
         df["pagamenti_pubblici_eur"] / df["ricavi_totali_eur"]
     ).clip(0, 0.8)
+
+    # DEBITO / EBITDA
     df["debito_su_ebitda"] = (
         df["debito_finanziario_eur"] / df["ebitda_adj_eur"]
     ).clip(0, 12)
 
+    # SCORE TECNICO-AMBIENTALE (0–1) = 0.5 * AGRI + 0.3 * ECO + 0.2 * COMPLIANCE
+    # dove:
+    #   - AGRI proxy = eco_schemi_score / 5 (pratiche agronomiche “buone”)
+    #   - ECO = eco_schemi_score / 5
+    #   - COMPLIANCE = compliance_score / 10
+    agri_proxy = df["eco_schemi_score"] / 5.0
+    eco_norm = df["eco_schemi_score"] / 5.0
+    comp_norm = df["compliance_score"] / 10.0
     df["score_tecnico_ambientale"] = (
-        0.6 * (df["eco_schemi_score"] / 5) +
-        0.4 * (df["compliance_score"] / 10)
-    )
+        0.5 * agri_proxy + 0.3 * eco_norm + 0.2 * comp_norm
+    ).clip(0, 1)
 
+    # PENALITÀ INADEMPIENZE (ultimi 5 anni)
+    # penale_inadempienze = 0.1 * n_anni_inadempienze → max 0.3
     df["penale_inadempienze"] = df["anni_inadempienze_ultimi5"] * 0.1
 
+    # GARANZIE REALI = 70% valore terreni + 50% fabbricati
     df["garanzie_reali_eur"] = (
         df["valore_terreni_eur"] * 0.7 + df["valore_fabbricati_eur"] * 0.5
     )
+
+    # LOAN-TO-VALUE (LTV) = Debito finanziario / Garanzie reali
     df["loan_to_value"] = (
         df["debito_finanziario_eur"] / df["garanzie_reali_eur"].replace(0, np.nan)
     ).fillna(0).clip(0, 3)
@@ -191,10 +200,11 @@ def compute_financial_drivers(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ------------------------------------------------
-# DETTAGLIO PER MODULO (CALCOLO TRASPARENTE PER AZIENDA)
+# 3. MODULI DI RATING – DETTAGLIO FORMULE PER AZIENDA
 # ------------------------------------------------
 
 def module_econ_detail(r: pd.Series) -> dict:
+    # Normalizzazioni (0–1) per EBITDA margin, Debito/EBITDA, Rapporto sussidi
     comp_ebitda_norm = float(np.interp(
         r["ebitda_margin"], [-0.2, 0.0, 0.2, 0.4], [0.0, 0.3, 0.8, 1.0]
     ))
@@ -204,18 +214,19 @@ def module_econ_detail(r: pd.Series) -> dict:
     comp_sussidi_norm = float(np.interp(
         r["rapporto_sussidi"], [0.0, 0.2, 0.4, 0.7, 0.8], [0.8, 0.8, 0.5, 0.2, 0.0]
     ))
+
+    # SCORE MODULO ECONOMICO-FINANZIARIO (0–40)
+    # score_econ = 40 × [0.4×EBITDA_norm + 0.4×Debito_norm + 0.2×Sussidi_norm]
     econ_raw = 0.4 * comp_ebitda_norm + 0.4 * comp_debito_norm + 0.2 * comp_sussidi_norm
     econ_raw = max(0.0, min(1.0, econ_raw))
     score = econ_raw * 40.0
+
     return {
         "comp_ebitda_norm": comp_ebitda_norm,
         "comp_debito_norm": comp_debito_norm,
         "comp_sussidi_norm": comp_sussidi_norm,
         "econ_raw": econ_raw,
         "score": score,
-        "contrib_ebitda": 0.4 * comp_ebitda_norm * 40.0,
-        "contrib_debito": 0.4 * comp_debito_norm * 40.0,
-        "contrib_sussidi": 0.2 * comp_sussidi_norm * 40.0,
     }
 
 def module_and_detail(r: pd.Series) -> dict:
@@ -223,10 +234,13 @@ def module_and_detail(r: pd.Series) -> dict:
     ritardi = float(np.clip(r["giorni_medi_ritardo_pagamenti"], 0, 60))
     soff = int(r["cr_flag_sofferenza"])
 
+    # Normalizzazioni
     sconfin_norm = float(np.interp(sconfin, [0, 1, 3, 5], [1.0, 0.8, 0.3, 0.0]))
     ritardi_norm = float(np.interp(ritardi, [0, 10, 30, 60], [1.0, 0.8, 0.4, 0.0]))
     soff_norm = 0.0 if soff == 1 else 1.0
 
+    # SCORE MODULO ANDAMENTALE (0–20)
+    # score_and = 20 × [0.4×Sconfin_norm + 0.3×Ritardi_norm + 0.3×Soff_norm]
     and_raw = 0.4 * sconfin_norm + 0.3 * ritardi_norm + 0.3 * soff_norm
     and_raw = max(0.0, min(1.0, and_raw))
     score = and_raw * 20.0
@@ -240,26 +254,25 @@ def module_and_detail(r: pd.Series) -> dict:
         "soff_norm": soff_norm,
         "and_raw": and_raw,
         "score": score,
-        "contrib_sconfin": 0.4 * sconfin_norm * 20.0,
-        "contrib_ritardi": 0.3 * ritardi_norm * 20.0,
-        "contrib_soff": 0.3 * soff_norm * 20.0,
     }
 
 def module_strutt_detail(r: pd.Series) -> dict:
     superf = float(np.clip(r["superficie_ha"], 5, 250))
     superf_norm = float(np.interp(superf, [5, 30, 80, 250], [0.4, 1.0, 0.9, 0.5]))
     divers_norm = float(np.clip(r["indice_diversificazione"], 0, 1))
+
+    # SCORE MODULO STRUTTURALE (0–10)
+    # score_strutt = 10 × [0.6×Superficie_norm + 0.4×Diversificazione_norm]
     strutt_raw = 0.6 * superf_norm + 0.4 * divers_norm
     strutt_raw = max(0.0, min(1.0, strutt_raw))
     score = strutt_raw * 10.0
+
     return {
         "superficie": superf,
         "superficie_norm": superf_norm,
         "diversificazione": divers_norm,
         "strutt_raw": strutt_raw,
         "score": score,
-        "contrib_superficie": 0.6 * superf_norm * 10.0,
-        "contrib_diversificazione": 0.4 * divers_norm * 10.0,
     }
 
 def module_cap_detail(r: pd.Series) -> dict:
@@ -267,9 +280,13 @@ def module_cap_detail(r: pd.Series) -> dict:
     ltv_norm = float(np.interp(ltv, [0.0, 0.4, 0.7, 1.0, 3.0], [1.0, 1.0, 0.7, 0.3, 0.0]))
     anni_rel = float(np.clip(r["anni_rapporto_banca"], 1, 20))
     anni_rel_norm = float(np.interp(anni_rel, [1, 5, 10, 20], [0.3, 0.6, 0.9, 1.0]))
+
+    # SCORE MODULO CAPITALE (0–10)
+    # score_cap = 10 × [0.7×LTV_norm + 0.3×AnniRapporto_norm]
     cap_raw = 0.7 * ltv_norm + 0.3 * anni_rel_norm
     cap_raw = max(0.0, min(1.0, cap_raw))
     score = cap_raw * 10.0
+
     return {
         "ltv": ltv,
         "ltv_norm": ltv_norm,
@@ -277,20 +294,17 @@ def module_cap_detail(r: pd.Series) -> dict:
         "anni_rapporto_norm": anni_rel_norm,
         "cap_raw": cap_raw,
         "score": score,
-        "contrib_ltv": 0.7 * ltv_norm * 10.0,
-        "contrib_anni": 0.3 * anni_rel_norm * 10.0,
     }
 
 def module_tec_detail(r: pd.Series) -> dict:
     tec_norm = float(np.clip(r["score_tecnico_ambientale"], 0, 1))
+    # SCORE MODULO TECNICO-AMBIENTALE (0–20)
+    # score_tec = 20 × score_tecnico_ambientale_norm
     score = tec_norm * 20.0
-    return {
-        "tec_norm": tec_norm,
-        "score": score,
-    }
+    return {"tec_norm": tec_norm, "score": score}
 
 # ------------------------------------------------
-# CALCOLO COMPLESSIVO RATING (USA I MODULI SOPRA)
+# 4. CALCOLO COMPLESSIVO RATING (A–E + PD)
 # ------------------------------------------------
 
 def compute_modules_row(r: pd.Series) -> pd.Series:
@@ -300,11 +314,16 @@ def compute_modules_row(r: pd.Series) -> pd.Series:
     cap = module_cap_detail(r)
     tec = module_tec_detail(r)
 
+    # PENALITÀ INADEMPIENZE (0–30 punti)
+    # penale_pts = min(30, penale_inadempienze × 15)
     penale_pts = float(np.clip(r["penale_inadempienze"] * 15.0, 0, 30))
 
+    # SCORE COMPLESSIVO (0–100)
+    # score_tot = score_econ + score_and + score_strutt + score_cap + score_tec – penale_pts
     score = econ["score"] + andm["score"] + strutt["score"] + cap["score"] + tec["score"] - penale_pts
     score = max(0.0, min(100.0, score))
 
+    # MAPPATURA IN CLASSI A–E
     if score >= 85:
         rating_class = "A – Alta solvibilità"
     elif score >= 70:
@@ -319,31 +338,32 @@ def compute_modules_row(r: pd.Series) -> pd.Series:
     pd_min, pd_max = PD_MAP[rating_class]
     pd_centrale = (pd_min + pd_max) / 2.0
 
+    # SPIEGAZIONE TESTUALE
     parts = []
     if econ["score"] < 20:
-        parts.append("modulo economico-finanziario debole")
+        parts.append("modulo economico-finanziario debole (margini o leva da riequilibrare)")
     elif econ["score"] > 30:
-        parts.append("modulo economico-finanziario solido")
+        parts.append("modulo economico-finanziario complessivamente solido")
 
     if andm["score"] < 10:
-        parts.append("profilo andamentale con elementi di attenzione")
+        parts.append("profilo andamentale con elementi di attenzione (sconfinamenti/ritardi)")
     elif andm["score"] > 15:
-        parts.append("buon track record andamentale")
+        parts.append("storico andamentale regolare")
 
     if strutt["score"] < 5:
-        parts.append("struttura produttiva da rafforzare")
+        parts.append("struttura produttiva di scala limitata o poco diversificata")
     else:
-        parts.append("struttura produttiva adeguata")
+        parts.append("struttura produttiva adeguata al profilo di rischio")
 
     if cap["score"] < 5:
-        parts.append("copertura tramite capitale fondiario limitata")
+        parts.append("copertura tramite capitale fondiario/agrario limitata")
     else:
-        parts.append("capitale fondiario/agrario a supporto della posizione creditizia")
+        parts.append("capitale fondiario/agrario a supporto rilevante")
 
     if tec["score"] < 10:
-        parts.append("profilo tecnico-ambientale e di compliance con criticità")
+        parts.append("profilo tecnico-ambientale/compliance con alcune criticità")
     else:
-        parts.append("profilo tecnico-ambientale e di compliance tendenzialmente positivo")
+        parts.append("profilo tecnico-ambientale/compliance tendenzialmente positivo")
 
     spiegazione = "; ".join(parts) + "."
 
@@ -370,7 +390,7 @@ def compute_rating(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ------------------------------------------------
-# NARRATIVA
+# 5. NARRATIVA AZIENDALE
 # ------------------------------------------------
 
 def build_company_narrative(r: pd.Series) -> str:
@@ -387,29 +407,83 @@ def build_company_narrative(r: pd.Series) -> str:
         f"a fronte di un indebitamento finanziario di circa {debito_mln:.2f} milioni. "
         f"Il profilo di rischio creditizio è classificato {r['classe_rating']} "
         f"con uno score interno pari a {r['score_rischio']:.1f} su 100, "
-        f"corrispondente a una Probability of Default stimata nell'intervallo "
-        f"{pd_min:.1f}–{pd_max:.1f}% su base annua. "
+        f"e una Probabilità di Default (PD) stimata nell'intervallo {pd_min:.1f}–{pd_max:.1f}% su base annua. "
         f"La valutazione integra cinque moduli: economico-finanziario, andamentale/comportamentale, "
-        f"strutturale-produttivo, capitale fondiario/agrario e profilo tecnico-ambientale/compliance."
+        f"strutturale-produttivo, capitale fondiario/agrario e tecnico-ambientale/compliance, "
+        f"alimentati da dati amministrativi (fascicolo aziendale, PAC), informazioni creditizie simulate "
+        f"e proxy di struttura e capitale fondiario."
     )
     return testo
 
 # ------------------------------------------------
-# INTERFACCIA STREAMLIT
+# 6. SERIE STORICA 5 ANNI PER AZIENDA (SIMULATA)
+# ------------------------------------------------
+
+def build_time_series(r: pd.Series) -> pd.DataFrame:
+    """
+    Crea una serie storica fittizia a 5 anni (t-4,...,t),
+    partendo dai valori correnti e applicando i trend.
+    """
+    anni = [r"t-4", r"t-3", r"t-2", r"t-1", r"t"]
+    ricavi = []
+    ebitda_margins = []
+    rese = []
+    eco_scores = []
+    inademp = []
+
+    ricavi_base = r["ricavi_totali_eur"]
+    ebitda_base = r["ebitda_margin"]
+    rese_base = r["rese_t_ha"]
+    eco_base = r["eco_schemi_score"]
+    inademp_base = r["anni_inadempienze_ultimi5"]
+
+    for i in range(5):
+        # ricavi con trend e rumore
+        fattore_ricavi = r["trend_ricavi"] ** (i - 4)
+        ricavi.append(ricavi_base * fattore_ricavi * np.random.uniform(0.95, 1.05))
+        # EBITDA margin
+        fatt_ebitda = r["trend_ebitda_margin"] ** (i - 4)
+        ebitda_margins.append(
+            float(np.clip(ebitda_base * fatt_ebitda * np.random.uniform(0.95, 1.05), -0.5, 0.6))
+        )
+        # rese
+        rese.append(
+            float(np.clip(rese_base * np.random.uniform(0.9, 1.1), 1.5, 13.0))
+        )
+        # eco-schemi score
+        eco_scores.append(
+            int(np.clip(eco_base + r["trend_eco"] * (i - 4) + np.random.randint(-1, 2), 0, 5))
+        )
+        # inadempienze cumulative (proxy)
+        inademp.append(
+            max(0, inademp_base + np.random.randint(-1, 2))
+        )
+
+    hist_df = pd.DataFrame({
+        "Anno": anni,
+        "Ricavi totali stimati (EUR)": np.round(ricavi, 0),
+        "EBITDA margin": ebitda_margins,
+        "Rese t/ha": np.round(rese, 1),
+        "Eco-schemi attivati": eco_scores,
+        "Anni con inadempienze (cumulato)": inademp,
+    })
+    return hist_df
+
+# ------------------------------------------------
+# 7. INTERFACCIA STREAMLIT
 # ------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="AgriRating - A model rating system by EY", layout="wide")
+    st.set_page_config(page_title="AgriRating - A model rating system for farms, layout="wide")
 
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
-        # st.image("logo_agrirating.png", width=120)  # se hai un logo
+        # st.image("logo_agrirating.png", width=120)
         st.empty()
     with col_title:
-        st.title("AgriRating - A model rating system by EY")
+        st.title("AgriRating - A model rating system for farms")
         st.caption(
-            "POC di sistema di rating agricolo integrato (moduli economico-finanziario, andamentale, "
-            "strutturale-produttivo, capitale fondiario/agrario, tecnico-ambientale/compliance)."
+            "Prototipo di sistema di rating agricolo multi-modulo con classi A–E e Probabilità di Default (PD) stimata."
         )
 
     if "data" not in st.session_state:
@@ -428,13 +502,13 @@ def main():
 
     classi = sorted(df["classe_rating"].unique().tolist())
     classi_sel = st.sidebar.multiselect(
-        "Classi di rischio",
+        "Classi di rischio (A–E)",
         options=classi,
         default=classi,
     )
 
     min_score = st.sidebar.slider(
-        "Score minimo (0–100, alto = rischio basso)",
+        "Score interno minimo (0–100, alto = rischio basso)",
         0, 100, 0, 5
     )
 
@@ -455,20 +529,21 @@ def main():
 
     # ----------------- PORTAFOGLIO -----------------
     with tab_port:
-        st.subheader("Vista complessiva portafoglio (filtri applicati dalla sidebar)")
+        st.subheader("Vista portafoglio (filtri applicati)")
+
         col1, col2, col3, col4, col5 = st.columns(5)
         if len(df_filt) > 0:
-            col1.metric("Numero aziende", len(df_filt))
-            col2.metric("Score medio", f"{df_filt['score_rischio'].mean():.1f}")
+            col1.metric("Numero aziende in portafoglio", len(df_filt))
+            col2.metric("Score interno medio", f"{df_filt['score_rischio'].mean():.1f}")
             col3.metric("PD media stimata", f"{df_filt['pd_centrale'].mean():.2f}%")
-            col4.metric("Ricavi totali (M€)", f"{df_filt['ricavi_totali_eur'].sum()/1e6:,.1f}")
-            col5.metric("Debito totale (M€)", f"{df_filt['debito_finanziario_eur'].sum()/1e6:,.1f}")
+            col4.metric("Ricavi totali stimati (M€)", f"{df_filt['ricavi_totali_eur'].sum()/1e6:,.1f}")
+            col5.metric("Debito finanziario totale (M€)", f"{df_filt['debito_finanziario_eur'].sum()/1e6:,.1f}")
         else:
-            col1.metric("Numero aziende", 0)
-            col2.metric("Score medio", "-")
+            col1.metric("Numero aziende in portafoglio", 0)
+            col2.metric("Score interno medio", "-")
             col3.metric("PD media stimata", "-")
-            col4.metric("Ricavi totali (M€)", "-")
-            col5.metric("Debito totale (M€)", "-")
+            col4.metric("Ricavi totali stimati (M€)", "-")
+            col5.metric("Debito finanziario totale (M€)", "-")
 
         st.markdown("### Distribuzione per classe di rating (A–E)")
         if len(df_filt) > 0:
@@ -478,36 +553,10 @@ def main():
                 pd_media=("pd_centrale", "mean"),
             ).sort_index()
             st.dataframe(agg_class, width="stretch")
-            st.bar_chart(agg_class["n_aziende"])
         else:
             st.info("Nessuna azienda dopo i filtri.")
 
-        st.markdown("### Sintesi per regione")
-        if len(df_filt) > 0:
-            agg_reg = df_filt.groupby("regione").agg(
-                n_aziende=("farm_id", "count"),
-                score_medio=("score_rischio", "mean"),
-                pd_media=("pd_centrale", "mean"),
-                ricavi_totali=("ricavi_totali_eur", "sum"),
-                debito_totale=("debito_finanziario_eur", "sum"),
-            ).sort_values("score_medio", ascending=False)
-            st.dataframe(agg_reg, width="stretch")
-        else:
-            st.info("Nessuna azienda per la vista regionale.")
-
-        st.markdown("### Sintesi per coltura principale")
-        if len(df_filt) > 0:
-            agg_crop = df_filt.groupby("coltura_principale").agg(
-                n_aziende=("farm_id", "count"),
-                score_medio=("score_rischio", "mean"),
-                pd_media=("pd_centrale", "mean"),
-                ricavi_totali=("ricavi_totali_eur", "sum"),
-            ).sort_values("score_medio", ascending=False)
-            st.dataframe(agg_crop, width="stretch")
-        else:
-            st.info("Nessuna azienda per la vista per coltura.")
-
-        st.markdown("### Elenco aziende (dettaglio sintetico)")
+        st.markdown("### Elenco aziende (vista sintetica)")
         if len(df_filt) > 0:
             cols_show = [
                 "farm_id", "denominazione", "regione", "coltura_principale",
@@ -523,9 +572,10 @@ def main():
         else:
             st.info("Nessuna azienda da visualizzare.")
 
-    # -------------- SCHEDA AZIENDA + MODULI CLICCABILI --------------
+    # -------------- SCHEDA AZIENDA (MODULI CLICCABILI + FORMULE + FONTI) --------------
     with tab_farm:
-        st.subheader("Scheda creditizia sintetica (azienda singola)")
+        st.subheader("Scheda azienda – rating e moduli di calcolo")
+
         if len(df_filt) == 0:
             st.info("Nessuna azienda dopo i filtri.")
         else:
@@ -534,81 +584,254 @@ def main():
             sel_id = selected.split(" – ")[0]
             row = df_filt[df_filt["farm_id"] == sel_id].iloc[0]
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Classe di rating", row["classe_rating"])
-            c1.metric("Score interno (0–100)", f"{row['score_rischio']:.1f}")
-            c2.metric("PD min", f"{row['pd_min']:.2f}%")
-            c2.metric("PD max", f"{row['pd_max']:.2f}%")
-            c3.metric("EBITDA margin", f"{row['ebitda_margin']*100:.1f}%")
-            c3.metric("Debito / EBITDA", f"{row['debito_su_ebitda']:.1f}x")
-            c4.metric("Rapporto sussidi", f"{row['rapporto_sussidi']*100:.1f}%")
-            c4.metric("Score tecnico-ambientale", f"{row['score_tecnico_ambientale']*100:.1f}%")
-
-            st.markdown("#### Descrizione sintetica (testo parametrico)")
-            st.write(build_company_narrative(row))
-
-            st.markdown("#### Moduli di rating – dettaglio calcolo (clicca sul modulo)")
-            tab_me, tab_ma, tab_ms, tab_mc, tab_mt = st.tabs([
-                "Modulo economico-finanziario",
-                "Modulo andamentale/comportamentale",
-                "Modulo strutturale-produttivo",
-                "Modulo capitale fondiario/agrario",
-                "Modulo tecnico-ambientale/compliance",
-            ])
-
             econ = module_econ_detail(row)
             andm = module_and_detail(row)
             strutt = module_strutt_detail(row)
             cap = module_cap_detail(row)
             tec = module_tec_detail(row)
 
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Classe di rating", row["classe_rating"])
+            c1.metric("Score interno (0–100)", f"{row['score_rischio']:.1f}")
+            c2.metric("Probabilità di Default (PD) minima", f"{row['pd_min']:.2f}%")
+            c2.metric("Probabilità di Default (PD) massima", f"{row['pd_max']:.2f}%")
+            c3.metric("Margine operativo lordo (EBITDA margin)", f"{row['ebitda_margin']*100:.1f}%")
+            c3.metric("Rapporto debito / EBITDA", f"{row['debito_su_ebitda']:.1f}x")
+            c4.metric("Incidenza pagamenti PAC/eco-schemi", f"{row['rapporto_sussidi']*100:.1f}%")
+            c4.metric("Indice tecnico-ambientale/compliance", f"{row['score_tecnico_ambientale']*100:.1f}%")
+
+            st.markdown("#### Descrizione sintetica")
+            st.write(build_company_narrative(row))
+
+            st.markdown("#### Moduli di rating – clicca per vedere formule e fonti dati")
+            tab_me, tab_ma, tab_ms, tab_mc, tab_mt, tab_hist = st.tabs([
+                "Economico-finanziario",
+                "Andamentale/comportamentale",
+                "Strutturale-produttivo",
+                "Capitale fondiario/agrario",
+                "Tecnico-ambientale/compliance",
+                "Storico 5 anni",
+            ])
+
+            # ECONOMICO-FINANZIARIO
             with tab_me:
                 st.markdown("**Modulo economico-finanziario (0–40 punti)**")
+                st.markdown(
+                    """
+                    Formule principali:
+
+                    - Ricavi totali = Ricavi di mercato + Pagamenti pubblici (PAC, eco-schemi, aiuti)
+                    - EBITDA = Ricavi totali − Costi operativi
+                    - EBITDA margin = EBITDA / Ricavi totali
+                    - Rapporto sussidi = Pagamenti pubblici / Ricavi totali
+                    - Debito / EBITDA = Debito finanziario / EBITDA\_aggiustato
+                    - Score economico-finanziario = 40 × [0,4×EBITDA_norm + 0,4×Debito_norm + 0,2×Sussidi_norm]
+                    """
+                )
+
                 df_me = pd.DataFrame([
-                    ["EBITDA margin", f"{row['ebitda_margin']*100:.1f}%", econ["comp_ebitda_norm"], "40%"],
-                    ["Debito / EBITDA", f"{row['debito_su_ebitda']:.1f}x", econ["comp_debito_norm"], "40%"],
-                    ["Rapporto sussidi/ricavi", f"{row['rapporto_sussidi']*100:.1f}%", econ["comp_sussidi_norm"], "20%"],
-                ], columns=["Variabile", "Valore osservato", "Valore normalizzato (0–1)", "Peso nel modulo"])
+                    [
+                        "EBITDA margin",
+                        f"{row['ebitda_margin']*100:.1f}%",
+                        f"{econ['comp_ebitda_norm']:.2f}",
+                        "0,4",
+                        "Bilanci/dichiarazioni fiscali (Agenzia Entrate, CERVED), fascicolo aziendale",
+                    ],
+                    [
+                        "Debito / EBITDA",
+                        f"{row['debito_su_ebitda']:.1f}x",
+                        f"{econ['comp_debito_norm']:.2f}",
+                        "0,4",
+                        "Informazioni creditizie (Centrale Rischi), bilancio, banca partner",
+                    ],
+                    [
+                        "Rapporto sussidi / ricavi",
+                        f"{row['rapporto_sussidi']*100:.1f}%",
+                        f"{econ['comp_sussidi_norm']:.2f}",
+                        "0,2",
+                        "SIAN/AGEA (pagamenti PAC, eco-schemi), fascicolo aziendale",
+                    ],
+                ], columns=[
+                    "Indicatore",
+                    "Valore osservato",
+                    "Valore normalizzato (0–1)",
+                    "Peso nel modulo",
+                    "Fonti dati previste",
+                ])
                 st.dataframe(df_me, width="stretch", hide_index=True)
                 st.markdown(f"Punteggio modulo economico-finanziario: **{econ['score']:.1f} / 40**")
 
+            # ANDAMENTALE
             with tab_ma:
                 st.markdown("**Modulo andamentale/comportamentale (0–20 punti)**")
+                st.markdown(
+                    """
+                    Formule principali:
+
+                    - Score andamentale = 20 × [0,4×Sconfinamenti_norm + 0,3×Ritardi_norm + 0,3×Sofferenze_norm]
+                    - Sconfinamenti_norm: da 1,0 (nessuno) a 0,0 (molti sconfinamenti)
+                    - Ritardi_norm: da 1,0 (nessun ritardo) a 0,0 (ritardi > 60 giorni)
+                    - Sofferenze_norm: 1,0 se nessuna sofferenza; 0,0 se presente sofferenza
+                    """
+                )
                 df_ma = pd.DataFrame([
-                    ["Numero sconfinamenti 12 mesi", andm["sconfin"], andm["sconfin_norm"], "40%"],
-                    ["Giorni medi ritardo pagamenti", andm["ritardi"], andm["ritardi_norm"], "30%"],
-                    ["Presenza sofferenza", "Sì" if andm["sofferenza_flag"] == 1 else "No", andm["soff_norm"], "30%"],
-                ], columns=["Indicatore", "Valore osservato", "Valore normalizzato (0–1)", "Peso nel modulo"])
+                    [
+                        "Numero sconfinamenti negli ultimi 12 mesi",
+                        andm["sconfin"],
+                        f"{andm['sconfin_norm']:.2f}",
+                        "0,4",
+                        "Centrale Rischi, sistemi informativi bancari",
+                    ],
+                    [
+                        "Giorni medi di ritardo nei pagamenti",
+                        andm["ritardi"],
+                        f"{andm['ritardi_norm']:.2f}",
+                        "0,3",
+                        "Centrale Rischi, contabilità clienti/fornitori",
+                    ],
+                    [
+                        "Presenza di posizioni a sofferenza",
+                        "Sì" if andm["sofferenza_flag"] == 1 else "No",
+                        f"{andm['soff_norm']:.2f}",
+                        "0,3",
+                        "Centrale Rischi, segnalazioni bancarie",
+                    ],
+                ], columns=[
+                    "Indicatore",
+                    "Valore osservato",
+                    "Valore normalizzato (0–1)",
+                    "Peso nel modulo",
+                    "Fonti dati previste",
+                ])
                 st.dataframe(df_ma, width="stretch", hide_index=True)
                 st.markdown(f"Punteggio modulo andamentale/comportamentale: **{andm['score']:.1f} / 20**")
 
+            # STRUTTURALE
             with tab_ms:
                 st.markdown("**Modulo strutturale-produttivo (0–10 punti)**")
+                st.markdown(
+                    """
+                    Formule principali:
+
+                    - Superficie_norm: funzione della SAU aziendale (5–250 ha)
+                    - Diversificazione_norm: indice 0–1 costruito su numero di produzioni, filiere, attività complementari
+                    - Score strutturale = 10 × [0,6×Superficie_norm + 0,4×Diversificazione_norm]
+                    """
+                )
                 df_ms = pd.DataFrame([
-                    ["Superficie aziendale (ha)", strutt["superficie"], strutt["superficie_norm"], "60%"],
-                    ["Indice di diversificazione", f"{strutt['diversificazione']:.2f}", strutt["diversificazione"], "40%"],
-                ], columns=["Indicatore", "Valore osservato", "Valore normalizzato (0–1)", "Peso nel modulo"])
+                    [
+                        "Superficie agricola utilizzata (SAU, ha)",
+                        strutt["superficie"],
+                        f"{strutt['superficie_norm']:.2f}",
+                        "0,6",
+                        "Fascicolo aziendale SIAN, catasto",
+                    ],
+                    [
+                        "Indice di diversificazione produttiva (0–1)",
+                        f"{strutt['diversificazione']:.2f}",
+                        f"{strutt['diversificazione']:.2f}",
+                        "0,4",
+                        "Fascicolo aziendale, anagrafe aziende, dati di filiera",
+                    ],
+                ], columns=[
+                    "Indicatore",
+                    "Valore osservato",
+                    "Valore normalizzato (0–1)",
+                    "Peso nel modulo",
+                    "Fonti dati previste",
+                ])
                 st.dataframe(df_ms, width="stretch", hide_index=True)
                 st.markdown(f"Punteggio modulo strutturale-produttivo: **{strutt['score']:.1f} / 10**")
 
+            # CAPITALE FONDIARIO
             with tab_mc:
                 st.markdown("**Modulo capitale fondiario/agrario (0–10 punti)**")
+                st.markdown(
+                    """
+                    Formule principali:
+
+                    - Garanzie reali = 0,7×Valore terreni + 0,5×Valore fabbricati
+                    - Loan-to-Value (LTV) = Debito finanziario / Garanzie reali
+                    - Score capitale = 10 × [0,7×LTV_norm + 0,3×AnniRapporto_norm]
+                    """
+                )
                 df_mc = pd.DataFrame([
-                    ["Loan-to-Value (debito/garanzie reali)", f"{cap['ltv']:.2f}", cap["ltv_norm"], "70%"],
-                    ["Anni di rapporto con la banca", cap["anni_rapporto"], cap["anni_rapporto_norm"], "30%"],
-                ], columns=["Indicatore", "Valore osservato", "Valore normalizzato (0–1)", "Peso nel modulo"])
+                    [
+                        "Loan-to-Value (debito / garanzie reali)",
+                        f"{cap['ltv']:.2f}",
+                        f"{cap['ltv_norm']:.2f}",
+                        "0,7",
+                        "Catasto, perizie fondiarie, Centrale Rischi, bilanci",
+                    ],
+                    [
+                        "Anni di rapporto continuativo con la banca",
+                        cap["anni_rapporto"],
+                        f"{cap['anni_rapporto_norm']:.2f}",
+                        "0,3",
+                        "Sistemi bancari interni, Centrale Rischi",
+                    ],
+                ], columns=[
+                    "Indicatore",
+                    "Valore osservato",
+                    "Valore normalizzato (0–1)",
+                    "Peso nel modulo",
+                    "Fonti dati previste",
+                ])
                 st.dataframe(df_mc, width="stretch", hide_index=True)
                 st.markdown(f"Punteggio modulo capitale fondiario/agrario: **{cap['score']:.1f} / 10**")
 
+            # TECNICO-AMBIENTALE
             with tab_mt:
                 st.markdown("**Modulo tecnico-ambientale/compliance (0–20 punti)**")
+                st.markdown(
+                    """
+                    Formule principali (indicatore sintetico 0–1):
+
+                    - Agri\_proxy = EcoSchemi / 5
+                    - Eco = EcoSchemi / 5
+                    - Compliance = Compliance\_score / 10
+                    - Score tecnico-ambientale = 0,5×Agri_proxy + 0,3×Eco + 0,2×Compliance
+                    - Score modulo tecnico-ambientale = 20 × Score tecnico-ambientale
+                    """
+                )
                 df_mt = pd.DataFrame([
-                    ["Score tecnico-ambientale/compliance", f"{row['score_tecnico_ambientale']*100:.1f}%", tec["tec_norm"], "100%"],
-                ], columns=["Indicatore", "Valore osservato", "Valore normalizzato (0–1)", "Peso nel modulo"])
+                    [
+                        "Numero eco-schemi/ pratiche agro-ambientali attivate",
+                        row["eco_schemi_score"],
+                        f"{tec['tec_norm']:.2f}",
+                        "0,5 (Agri) + 0,3 (Eco)",
+                        "SIAN/AGEA, fascicolo aziendale, registri eco-schemi",
+                    ],
+                    [
+                        "Indice di conformità e controlli (0–10)",
+                        row["compliance_score"],
+                        f"{row['compliance_score']/10.0:.2f}",
+                        "0,2",
+                        "SIAN, sistemi di controllo PAC, ispezioni, open data ambientali",
+                    ],
+                ], columns=[
+                    "Indicatore",
+                    "Valore osservato",
+                    "Valore normalizzato (0–1)",
+                    "Peso nel modulo",
+                    "Fonti dati previste",
+                ])
                 st.dataframe(df_mt, width="stretch", hide_index=True)
                 st.markdown(f"Punteggio modulo tecnico-ambientale/compliance: **{tec['score']:.1f} / 20**")
 
-            st.markdown("#### Spiegazione sintetica del rating")
+            # STORICO 5 ANNI
+            with tab_hist:
+                st.markdown("**Dimensione storica (ultimi 5 anni)** – dati simulati su base POC")
+                hist_df = build_time_series(row)
+                st.dataframe(hist_df, width="stretch", hide_index=True)
+
+                fig, ax = plt.subplots(figsize=(6, 3))
+                ax.plot(hist_df["Anno"], hist_df["EBITDA margin"], marker="o")
+                ax.set_ylabel("EBITDA margin")
+                ax.set_xlabel("Anno (t = anno corrente)")
+                st.pyplot(fig)
+
+            st.markdown("#### Spiegazione sintetica del rating complessivo")
             st.write(row["spiegazione_rating"])
 
     # ----------------- ANALISI DATI -----------------
@@ -659,13 +882,11 @@ def main():
 
         st.markdown("### Modello dati target (concettuale)")
         st.write(
-            "Il modello dati target per un rating agricolo regolamentare integra, oltre ai dati "
+            "Il modello dati target per un rating agricolo regolamentare integrerebbe, oltre ai dati "
             "tecnico-produttivi (fascicolo aziendale, superfici, colture, rese, pagamenti PAC/eco-schemi), "
-            "ulteriori famiglie di informazioni: Centrale Rischi, dati fiscali (Agenzia Entrate), "
-            "bilanci e informazioni settoriali (CERVED o equivalenti), dati di filiera, open data climatici "
-            "e remote sensing. Il POC simula alcuni di questi moduli attraverso variabili proxy, "
-            "ma la logica di normalizzazione per coltura/area/cluster e l'utilizzo di orizzonti pluriennali "
-            "andrebbero implementati in un data model esteso."
+            "informazioni creditizie di Centrale Rischi, bilanci e dati fiscali (Agenzia Entrate, CERVED), "
+            "dati di filiera, open data climatici e remote sensing, con normalizzazione per coltura/area "
+            "e orizzonte storico pluriennale."
         )
 
     # ----------------- MAPPA -----------------
@@ -683,8 +904,8 @@ def main():
                     "Regione: {regione}<br/>"
                     "Coltura: {coltura_principale}<br/>"
                     "Classe: {classe_rating}<br/>"
-                    "Score: {score_rischio}<br/>"
-                    "PD centrale: {pd_centrale:.2f}%"
+                    "Score interno: {score_rischio}<br/>"
+                    "PD centrale stimata: {pd_centrale:.2f}%"
                 ),
                 "style": {"color": "white"},
             }
