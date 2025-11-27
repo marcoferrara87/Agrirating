@@ -474,14 +474,14 @@ def build_time_series(r: pd.Series) -> pd.DataFrame:
 # ------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="AgriRating - A model rating system for farms, layout="wide")
+    st.set_page_config(page_title="AgriRating - A model credit rating system for farms", layout="wide")
 
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
         # st.image("logo_agrirating.png", width=120)
         st.empty()
     with col_title:
-        st.title("AgriRating - A model rating system for farms")
+        st.title("AgriRating - A model credit rating system by for farms")
         st.caption(
             "Prototipo di sistema di rating agricolo multi-modulo con classi A–E e Probabilità di Default (PD) stimata."
         )
@@ -935,3 +935,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
