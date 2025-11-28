@@ -690,13 +690,13 @@ def render_ai_assistant(df: pd.DataFrame):
 # ------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="AgriRating - A model rating system by EY", layout="wide")
+    st.set_page_config(page_title="AgriRating - A credit model rating system for farms", layout="wide")
 
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
         st.empty()
     with col_title:
-        st.title("AgriRating - A model rating system by EY")
+        st.title("AgriRating - A credit model rating system for farms")
         st.caption(
             "Prototipo di sistema di rating agricolo multi-modulo con classi A–E e Probabilità di Default (PD) stimata."
         )
@@ -1154,6 +1154,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
