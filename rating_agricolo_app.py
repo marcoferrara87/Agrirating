@@ -4,6 +4,13 @@ import streamlit as st
 import pydeck as pdk
 import matplotlib.pyplot as plt
 
+# Helper per compatibilità rerun con versioni diverse di Streamlit
+def _rerun():
+    if hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+    else:
+        st.rerun()
+
 # ------------------------------------------------
 # PARAMETRI BASE / CLASSI / COLORI
 # ------------------------------------------------
@@ -172,10 +179,6 @@ def compute_financial_drivers(df: pd.DataFrame) -> pd.DataFrame:
     ).clip(0, 12)
 
     # SCORE TECNICO-AMBIENTALE (0–1) = 0.5 * AGRI + 0.3 * ECO + 0.2 * COMPLIANCE
-    # dove:
-    #   - AGRI proxy = eco_schemi_score / 5 (pratiche agronomiche “buone”)
-    #   - ECO = eco_schemi_score / 5
-    #   - COMPLIANCE = compliance_score / 10
     agri_proxy = df["eco_schemi_score"] / 5.0
     eco_norm = df["eco_schemi_score"] / 5.0
     comp_norm = df["compliance_score"] / 10.0
@@ -184,7 +187,6 @@ def compute_financial_drivers(df: pd.DataFrame) -> pd.DataFrame:
     ).clip(0, 1)
 
     # PENALITÀ INADEMPIENZE (ultimi 5 anni)
-    # penale_inadempienze = 0.1 * n_anni_inadempienze → max 0.3
     df["penale_inadempienze"] = df["anni_inadempienze_ultimi5"] * 0.1
 
     # GARANZIE REALI = 70% valore terreni + 50% fabbricati
@@ -204,7 +206,6 @@ def compute_financial_drivers(df: pd.DataFrame) -> pd.DataFrame:
 # ------------------------------------------------
 
 def module_econ_detail(r: pd.Series) -> dict:
-    # Normalizzazioni (0–1) per EBITDA margin, Debito/EBITDA, Rapporto sussidi
     comp_ebitda_norm = float(np.interp(
         r["ebitda_margin"], [-0.2, 0.0, 0.2, 0.4], [0.0, 0.3, 0.8, 1.0]
     ))
@@ -216,7 +217,6 @@ def module_econ_detail(r: pd.Series) -> dict:
     ))
 
     # SCORE MODULO ECONOMICO-FINANZIARIO (0–40)
-    # score_econ = 40 × [0.4×EBITDA_norm + 0.4×Debito_norm + 0.2×Sussidi_norm]
     econ_raw = 0.4 * comp_ebitda_norm + 0.4 * comp_debito_norm + 0.2 * comp_sussidi_norm
     econ_raw = max(0.0, min(1.0, econ_raw))
     score = econ_raw * 40.0
@@ -240,7 +240,6 @@ def module_and_detail(r: pd.Series) -> dict:
     soff_norm = 0.0 if soff == 1 else 1.0
 
     # SCORE MODULO ANDAMENTALE (0–20)
-    # score_and = 20 × [0.4×Sconfin_norm + 0.3×Ritardi_norm + 0.3×Soff_norm]
     and_raw = 0.4 * sconfin_norm + 0.3 * ritardi_norm + 0.3 * soff_norm
     and_raw = max(0.0, min(1.0, and_raw))
     score = and_raw * 20.0
@@ -262,7 +261,6 @@ def module_strutt_detail(r: pd.Series) -> dict:
     divers_norm = float(np.clip(r["indice_diversificazione"], 0, 1))
 
     # SCORE MODULO STRUTTURALE (0–10)
-    # score_strutt = 10 × [0.6×Superficie_norm + 0.4×Diversificazione_norm]
     strutt_raw = 0.6 * superf_norm + 0.4 * divers_norm
     strutt_raw = max(0.0, min(1.0, strutt_raw))
     score = strutt_raw * 10.0
@@ -282,7 +280,6 @@ def module_cap_detail(r: pd.Series) -> dict:
     anni_rel_norm = float(np.interp(anni_rel, [1, 5, 10, 20], [0.3, 0.6, 0.9, 1.0]))
 
     # SCORE MODULO CAPITALE (0–10)
-    # score_cap = 10 × [0.7×LTV_norm + 0.3×AnniRapporto_norm]
     cap_raw = 0.7 * ltv_norm + 0.3 * anni_rel_norm
     cap_raw = max(0.0, min(1.0, cap_raw))
     score = cap_raw * 10.0
@@ -299,7 +296,6 @@ def module_cap_detail(r: pd.Series) -> dict:
 def module_tec_detail(r: pd.Series) -> dict:
     tec_norm = float(np.clip(r["score_tecnico_ambientale"], 0, 1))
     # SCORE MODULO TECNICO-AMBIENTALE (0–20)
-    # score_tec = 20 × score_tecnico_ambientale_norm
     score = tec_norm * 20.0
     return {"tec_norm": tec_norm, "score": score}
 
@@ -315,11 +311,9 @@ def compute_modules_row(r: pd.Series) -> pd.Series:
     tec = module_tec_detail(r)
 
     # PENALITÀ INADEMPIENZE (0–30 punti)
-    # penale_pts = min(30, penale_inadempienze × 15)
     penale_pts = float(np.clip(r["penale_inadempienze"] * 15.0, 0, 30))
 
     # SCORE COMPLESSIVO (0–100)
-    # score_tot = score_econ + score_and + score_strutt + score_cap + score_tec – penale_pts
     score = econ["score"] + andm["score"] + strutt["score"] + cap["score"] + tec["score"] - penale_pts
     score = max(0.0, min(100.0, score))
 
@@ -470,18 +464,239 @@ def build_time_series(r: pd.Series) -> pd.DataFrame:
     return hist_df
 
 # ------------------------------------------------
-# 7. INTERFACCIA STREAMLIT
+# 7. LOGICA ASSISTENTE AI (SEMPLIFICATA)
+# ------------------------------------------------
+
+def ai_answer(query: str, df: pd.DataFrame) -> str:
+    q = query.lower().strip()
+
+    # Cerca un FARM-XXXX dentro alla domanda
+    farm_id = None
+    for fid in df["farm_id"].tolist():
+        if fid.lower() in q:
+            farm_id = fid
+            break
+
+    if farm_id is not None:
+        r = df[df["farm_id"] == farm_id].iloc[0]
+        return (
+            f"Ho trovato **{r['denominazione']}** (`{r['farm_id']}`) in {r['regione']}.\n\n"
+            f"- Classe di rating: **{r['classe_rating']}** (score {r['score_rischio']:.1f}/100)\n"
+            f"- PD stimata: **{r['pd_min']:.2f}–{r['pd_max']:.2f}%**\n"
+            f"- EBITDA margin: **{r['ebitda_margin']*100:.1f}%**\n"
+            f"- Debito/EBITDA: **{r['debito_su_ebitda']:.1f}x**\n\n"
+            f"{r['spiegazione_rating']}"
+        )
+
+    if "classe" in q and "rating" in q:
+        return (
+            "La classe di rating deriva da uno score interno 0–100.\n\n"
+            "- Sommo i 5 moduli: economico-finanziario (0–40), andamentale (0–20), "
+            "strutturale (0–10), capitale fondiario/agrario (0–10), tecnico-ambientale (0–20).\n"
+            "- Tolgo fino a 30 punti di penalità per le inadempienze degli ultimi 5 anni.\n"
+            "- Applico la scala: ≥85 = A, 70–84 = B, 55–69 = C, 40–54 = D, <40 = E.\n"
+            "A ogni classe associo un intervallo di PD annua predefinito."
+        )
+
+    if "pd" in q or "probabilità di default" in q:
+        return (
+            "La PD non è calcolata in modo continuo ma agganciata alla classe di rating:\n\n"
+            "- A – Alta solvibilità: 0,0–0,5% annua\n"
+            "- B – Solvibile: 0,5–1,5%\n"
+            "- C – Vulnerabile: 1,5–3,0%\n"
+            "- D – Rischiosa: 3–8%\n"
+            "- E – Altamente rischiosa: 8–20%\n\n"
+            "Per il portafoglio uso il valore centrale dell’intervallo come PD puntuale."
+        )
+
+    if "rapporto sussidi" in q or "sussidi" in q:
+        return (
+            "Il rapporto sussidi è dato da **pagamenti pubblici / ricavi totali**.\n\n"
+            "Misura quanto il fatturato aziendale dipende da PAC ed eco-schemi; "
+            "più è alto, più il modello di business è esposto al rischio regolatorio "
+            "sul sostegno pubblico."
+        )
+
+    return (
+        "Posso spiegare formule dei moduli, intervalli di PD o sintetizzare il rating di una singola "
+        "azienda (es. `dimmi qualcosa su FARM-0007`). Digita un ID azienda o fammi una domanda sui moduli."
+    )
+
+def render_ai_assistant(df: pd.DataFrame):
+    if "ai_open" not in st.session_state:
+        st.session_state["ai_open"] = False
+    if "ai_messages" not in st.session_state:
+        st.session_state["ai_messages"] = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Ciao, sono l'assistente AI di AgriRating. Posso spiegare le formule, la logica delle "
+                    "classi A–E e riassumere il rating di una singola azienda. Prova con `FARM-0001`."
+                ),
+            }
+        ]
+
+    # CSS per fissare il blocco in basso a sinistra, sopra tutto
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlock"]:has(> #ai-chat-root) {
+            position: fixed;
+            left: 1.2rem;
+            bottom: 1.2rem;
+            max-width: 360px;
+            width: 360px;
+            z-index: 9999;
+        }
+        .ai-card {
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+            border: 1px solid rgba(15,23,42,0.08);
+            overflow: hidden;
+            font-size: 0.85rem;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .ai-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.45rem 0.7rem;
+            background: linear-gradient(135deg, #00694b, #00a884);
+            color: #ffffff;
+        }
+        .ai-header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .ai-avatar {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: #ffffff22;
+            border: 1px solid #ffffff66;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .ai-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            line-height: 1.1;
+        }
+        .ai-status {
+            font-size: 0.7rem;
+            opacity: 0.92;
+        }
+        .ai-dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #4ade80;
+            margin-right: 4px;
+            box-shadow: 0 0 0 4px rgba(74,222,128,0.25);
+        }
+        .ai-body {
+            padding: 0.45rem 0.6rem 0.3rem 0.6rem;
+            background: #f9fafb;
+            max-height: 260px;
+            overflow-y: auto;
+        }
+        .ai-minimized-button button {
+            border-radius: 999px !important;
+            padding: 0.35rem 0.7rem !important;
+            font-size: 0.8rem !important;
+        }
+        @media (max-width: 768px) {
+            div[data-testid="stVerticalBlock"]:has(> #ai-chat-root) {
+                left: 0.6rem;
+                bottom: 0.6rem;
+                width: calc(100vw - 1.2rem);
+                max-width: calc(100vw - 1.2rem);
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown('<div id="ai-chat-root"></div>', unsafe_allow_html=True)
+
+        # Stato: minimizzato
+        if not st.session_state["ai_open"]:
+            with st.container():
+                st.markdown(
+                    '<div class="ai-minimized-button">',
+                    unsafe_allow_html=True,
+                )
+                if st.button("🤖 AgriRating AI", key="ai_open_btn"):
+                    st.session_state["ai_open"] = True
+                    _rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+        # Stato: pannello aperto
+        st.markdown(
+            """
+            <div class="ai-card">
+              <div class="ai-header">
+                <div class="ai-header-left">
+                  <div class="ai-avatar">AI</div>
+                  <div>
+                    <div class="ai-title">Assistente AgriRating</div>
+                    <div class="ai-status"><span class="ai-dot"></span>Spiega moduli, PD e rating</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Corpo chat
+        st.markdown('<div class="ai-body">', unsafe_allow_html=True)
+        for msg in st.session_state["ai_messages"]:
+            with st.chat_message("assistant" if msg["role"] == "assistant" else "user"):
+                st.markdown(msg["content"])
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Input utente
+        user_input = st.chat_input("Scrivi una domanda o un ID azienda (es. FARM-0007)...")
+
+        if user_input:
+            st.session_state["ai_messages"].append(
+                {"role": "user", "content": user_input}
+            )
+            answer = ai_answer(user_input, df)
+            st.session_state["ai_messages"].append(
+                {"role": "assistant", "content": answer}
+            )
+            _rerun()
+
+        # Pulsante chiusura
+        close_col, _ = st.columns([1, 3])
+        with close_col:
+            if st.button("Chiudi", key="ai_close_btn"):
+                st.session_state["ai_open"] = False
+                _rerun()
+
+# ------------------------------------------------
+# 8. INTERFACCIA STREAMLIT
 # ------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="AgriRating - A model credit rating system for farms", layout="wide")
+    st.set_page_config(page_title="AgriRating - A model rating system by EY", layout="wide")
 
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
-        # st.image("logo_agrirating.png", width=120)
         st.empty()
     with col_title:
-        st.title("AgriRating - A model credit rating system by for farms")
+        st.title("AgriRating - A model rating system by EY")
         st.caption(
             "Prototipo di sistema di rating agricolo multi-modulo con classi A–E e Probabilità di Default (PD) stimata."
         )
@@ -624,7 +839,7 @@ def main():
                     - EBITDA = Ricavi totali − Costi operativi
                     - EBITDA margin = EBITDA / Ricavi totali
                     - Rapporto sussidi = Pagamenti pubblici / Ricavi totali
-                    - Debito / EBITDA = Debito finanziario / EBITDA\_aggiustato
+                    - Debito / EBITDA = Debito finanziario / EBITDA\\_aggiustato
                     - Score economico-finanziario = 40 × [0,4×EBITDA_norm + 0,4×Debito_norm + 0,2×Sussidi_norm]
                     """
                 )
@@ -787,9 +1002,9 @@ def main():
                     """
                     Formule principali (indicatore sintetico 0–1):
 
-                    - Agri\_proxy = EcoSchemi / 5
+                    - Agri\\_proxy = EcoSchemi / 5
                     - Eco = EcoSchemi / 5
-                    - Compliance = Compliance\_score / 10
+                    - Compliance = Compliance\\_score / 10
                     - Score tecnico-ambientale = 0,5×Agri_proxy + 0,3×Eco + 0,2×Compliance
                     - Score modulo tecnico-ambientale = 20 × Score tecnico-ambientale
                     """
@@ -933,6 +1148,12 @@ def main():
                 map_style="light",
             ))
 
+    # ----------------- AGENTE AI FLOTTE BOTTOM-LEFT -----------------
+    render_ai_assistant(df)
+
+
 if __name__ == "__main__":
     main()
+
+
 
